@@ -9,6 +9,7 @@ from DivvyJobs.schedules import LazyScheduleGoal
 from DivvyHistory.providers import ResourceHistoryEntry
 from DivvySession.DivvySession import EscalatePermissions
 from DivvyPlugins.plugin_helpers import register_job_module, unregister_job_module
+from DivvyUtils import schedule
 
 logger = logging.getLogger('ExampleHarvest')
 document_store = 'default' # Name of documentstore configuration to use
@@ -37,14 +38,8 @@ class SkeletonHarvester(PluginHarvester):
     behavior over multiple use cases.
     """
 
-    def __init__(self, resource_location, resource_class):
+    def __init__(self):
         super(SkeletonHarvester, self).__init__()
-        self.current_location = resource_location
-        self.sample_period_seconds = 43200
-        self.resource_class = resource_class
-        self._type = resource_class.get_db_class()
-        self._frontend = None
-        self._backend = None
 
     def _setup(self):
         """
@@ -68,24 +63,21 @@ class SkeletonHarvester(PluginHarvester):
 
     @classmethod
     def get_harvest_schedule(cls, **job_creation_kwargs):
-        """
-        We recommend that custom jobs go on the `DivvyCloudLongHarvesters` queue.
-        """
+        """ Sets frequency and worker queue """
         return LazyScheduleGoal(
-            queue_name='DivvyCloudLongHarvesters',
+            queue_name='DivvyCloudHarvest',
             schedulable=schedule.Periodic(hours=1)
         )
 
     @classmethod
     def get_template_id(cls, **job_creation_kwargs):
         """ This provides a unique name to the job """
-        return cls.form_default_template_id(
-            template_id_prefix='skeleton-github', **job_creation_kwargs
-        )
+        return 'github-repo-harvest'
 
     def repo_getter(self):
         """ My custom method for talking to Github """
         response = requests.get(repos_url, headers=api_version)
+        return response.json()
 
     def make_metric(self, raw_metric):
         """ My custom method for formatting an ElasticSearch entry
@@ -154,13 +146,24 @@ class SkeletonHarvester(PluginHarvester):
         logger.info('Collecting Github repo data')
 
         with Elasticsearch.ElasticsearchActionBatch(es_connection) as batch:
-            for metric in self.metrics_getter():
+            for metric in self.repo_getter():
                 batch.update(
-                    self.make_metric(metric).es_action()
+                    self.make_metric(metric)
                 )
 
     def _cleanup(self):
         super(SkeletonHarvester, self)._cleanup()
+
+
+@SharedSessionScope(DivvyCloudGatewayORM)
+def list_job_templates():
+    # Only 1 job template for this job
+
+    job_templates = [
+        SkeletonHarvester.create_job_template(),
+    ]
+
+    return job_templates
 
 
 _JOB_LOADED = False
