@@ -2,7 +2,7 @@
 Main plugin module for CPU Report plugin
 """
 from DivvyPlugins.plugin_metadata import PluginMetadata
-from plugins.example_harvester.ExampleHarvester import SkeletonHarvest  # pylint: disable=F0401
+# from plugins.example_harvester.ExampleHarvester import SkeletonHarvest  # pylint: disable=F0401
 
 
 class metadata(PluginMetadata):
@@ -20,3 +20,10 @@ class metadata(PluginMetadata):
     category = 'Reports'
     managed = True
 
+
+def load():
+    pass
+
+
+def unload():
+    pass
