@@ -1,6 +1,3 @@
-"""
-Main plugin module for CPU Report plugin
-"""
 from DivvyPlugins.plugin_metadata import PluginMetadata
 # from plugins.example_harvester.ExampleHarvester import SkeletonHarvest  # pylint: disable=F0401
 

@@ -1,21 +1,22 @@
 import logging
-import requests
 from datetime import datetime
-from DivvyDb import DivvyDbObjects, Elasticsearch
-from DivvyPlugins.plugin_jobs import PluginHarvester
+
+import requests
+from DivvyDb.DbObjects.metric import Metric
 from DivvyDb.DivvyCloudGatewayORM import DivvyCloudGatewayORM
-from DivvyDb.DivvyDb import SharedSessionScope
+from DivvyDb.DivvyDb import NewSession, SharedSessionScope
 from DivvyJobs.schedules import LazyScheduleGoal
-from DivvyHistory.providers import ResourceHistoryEntry
+from DivvyPlugins.plugin_helpers import (register_job_module,
+                                         unregister_job_module)
+from DivvyPlugins.plugin_jobs import PluginHarvester
 from DivvySession.DivvySession import EscalatePermissions
-from DivvyPlugins.plugin_helpers import register_job_module, unregister_job_module
 from DivvyUtils import schedule
 
 logger = logging.getLogger('ExampleHarvest')
-document_store = 'default' # Name of documentstore configuration to use
 
-repos_url =  "https://api.github.com/orgs/DivvyCloud/repos"
+repos_url = "https://api.github.com/orgs/DivvyCloud/repos"
 api_version = {"Accept": "application/vnd.github.v3+json"}
+
 
 class SkeletonHarvester(PluginHarvester):
     """ Example skeleton for a DivvyCloud harvester
@@ -79,25 +80,6 @@ class SkeletonHarvester(PluginHarvester):
         response = requests.get(repos_url, headers=api_version)
         return response.json()
 
-    def make_metric(self, raw_metric):
-        """ My custom method for formatting an ElasticSearch entry
-
-        This implementation creates a single index for all repos.
-
-        If you wanted to make a daily index to track repos over time. Simply change the `_index`
-        to something like `github_ + datetime.utcnow().strftime('%Y%m%d%H%M%S')`
-        """
-        return {
-            '_index': 'github', # ES will create if doesn't exist
-            '_type': 'github_repo', # ES will auto analyze and infer document type. Document schema can be manually added to ES.
-            '_id': raw_metric.get('full_name'), # Unique Id for document, here I'm using the fully qualified repo name.
-            '_source': { # Document payload
-                'name': raw_metric.get('name'),
-                'description': raw_metric.get('description', ''),
-                'html_url': raw_metric.get('html_url')
-            }
-        }
-
     @SharedSessionScope(DivvyCloudGatewayORM)
     @EscalatePermissions()
     def do_harvest(self):
@@ -109,47 +91,49 @@ class SkeletonHarvester(PluginHarvester):
         Acquire a connection like so; `db = DivvyCloudGatewayORM()` which can be used
         to make SQLAlchemy queries like: `db.session.query(...query)`.
 
-        Here we will use ElasticSearch for persistence. The `document_store` argument is the ES
-        index name. In your `divvy.json` config file you will note this entry:
+        In the case below where I'm only writing data, I'm using NewSessionScope which
+        creates a new database session.
 
-        ```json
+        Here we will use MySQL for persistence. The Metrics table allows for somewhat
+        arbirary key/value storage of metric information about resources. In this case
+        we're not referring to actual divvy resources so `target_resource_id` is the
+        fully qualified name of the git repo.
 
-        "documentstores": {
-            "default" : {
-                "type": "elasticsearch",
-                "name": "localhost",
-                "hosts": ["http://localhost:9200"],
-                "index_name" : "default"
-            },
-            // THIS IS NEW!!!
-            "github" : {
-                "type": "elasticsearch",
-                "name": "localhost",
-                "hosts": ["http://localhost:9200"],
-                "index_name" : "github"
-            }
-        }
-        ```
+        Two remaining things to note. Since each harvest will be inserting multiple records,
+        we use the SQLAlchemy `bulk_save_objects/1` function to commit them all in one query.
+        In certain cases where the insert size is large, it is sometimes necessary to chunk
+        the inserts into batch sizes to avoid max packet size limits of mysql queries.
 
-        DivvyCloud supports acquiring connections for multiple indexes and while this example
-        uses the "default" index, any number of new indexes can be configured.
-
-        Two remaining things to note. Since each harvest will be inserting multiple documents,
-        DivvyCloud's ElasticSearch interface supports batch inserts with the simple syntax of
-        a context manager `with` statement. Using `batch.update/1` adds a ES ready formatted
-        dictionary. To simplify the formatting of the data, we out line a helper method above
-        called `make_metric/1` which takes the response dictionary from the Github API.
+        Here we get each github repo and then insert three metrics for each; name, description,
+        and url. Each is associated with the `full_name` attribute which is unique.
         """
 
-        es_connection = Elasticsearch.get_connection(document_store)
+        with NewSession(DivvyCloudGatewayORM):
+            db = DivvyCloudGatewayORM()
+            metric_resources = []
+            for metric in self.repo_getter():
+                for metric_type in ['name', 'description', 'html_url']:
+                    metric_resources.append(
+                        Metric(
+                            metric_id='mymetric.github.%s' % metric_type,
+                            value=metric.get(metric_type, ''),
+                            # Cloud account resource my belong to
+                            organization_service_id=None,
+                            # Organization resource belongs to
+                            organization_id=None,
+                            # Unique Id for document, here I'm using the fully qualified repo name.
+                            target_resource_id=metric.get('full_name'),
+                            creation_timestamp=datetime.strftime(
+                                datetime.utcnow(), '%Y-%m-%d %H:%M:%S'
+                            )
+                        )
+                    )
+
+            if metric_resources:
+                db.session.bulk_save_objects(metric_resources)
+                db.session.commit()
 
         logger.info('Collecting Github repo data')
-
-        with Elasticsearch.ElasticsearchActionBatch(es_connection) as batch:
-            for metric in self.repo_getter():
-                batch.update(
-                    self.make_metric(metric)
-                )
 
     def _cleanup(self):
         super(SkeletonHarvester, self)._cleanup()
@@ -176,9 +160,9 @@ def load():
     except AttributeError:
         pass
 
+
 def unload():
     global _JOB_LOADED
     if _JOB_LOADED:
         unregister_job_module(__name__)
         _JOB_LOADED = False
-
