@@ -91,28 +91,17 @@ class SkeletonHarvester(PluginHarvester):
         Acquire a connection like so; `db = DivvyCloudGatewayORM()` which can be used
         to make SQLAlchemy queries like: `db.session.query(...query)`.
 
-        In the case below where I'm only writing data, I'm using NewSessionScope which
-        creates a new database session.
+        While we will not use MySQL for persistence. Supposed that we wanted to track
+        some numeric values over time for a resource. The Metrics table allows for
+        saving those values. In this imaginary case we're not referring to actual divvy
+        resources so `target_resource_id` is the fully qualified name of the git repo.
 
-        Here we will use MySQL for persistence. The Metrics table allows for somewhat
-        arbirary key/value storage of metric information about resources. In this case
-        we're not referring to actual divvy resources so `target_resource_id` is the
-        fully qualified name of the git repo.
-
-        Two remaining things to note. Since each harvest will be inserting multiple records,
-        we use the SQLAlchemy `bulk_save_objects/1` function to commit them all in one query.
-        In certain cases where the insert size is large, it is sometimes necessary to chunk
-        the inserts into batch sizes to avoid max packet size limits of mysql queries.
-
-        Here we get each github repo and then insert three metrics for each; name, description,
-        and url. Each is associated with the `full_name` attribute which is unique.
-        """
-
+        ```
         with NewSession(DivvyCloudGatewayORM):
             db = DivvyCloudGatewayORM()
             metric_resources = []
             for metric in self.repo_getter():
-                for metric_type in ['name', 'description', 'html_url']:
+                for metric_type in ['name', 'html_url']:
                     metric_resources.append(
                         Metric(
                             metric_id='mymetric.github.%s' % metric_type,
@@ -133,7 +122,32 @@ class SkeletonHarvester(PluginHarvester):
                 db.session.bulk_save_objects(metric_resources)
                 db.session.commit()
 
-        logger.info('Collecting Github repo data')
+        ```
+        Two remaining things to note. Since each harvest will be inserting multiple records,
+        we use the SQLAlchemy `bulk_save_objects/1` function to commit them all in one query.
+        In certain cases where the insert size is large, it is sometimes necessary to chunk
+        the inserts into batch sizes to avoid max packet size limits of mysql queries.
+
+        Here we get each github repo and then insert three metrics for each; name, description,
+        and url. Each is associated with the `full_name` attribute which is unique.
+
+        To prove out how the harvesting works you can start the JobScheduler to only run
+        this job at a rapid pace though never run a harvester like this in production.
+
+        ```
+        divvycloudjobscheduler --modules-whitelist=ExampleHarvest --rapid-fire-debug
+        divvycloudworker -h
+        ```
+        You should see something like this in your harvester logs.
+
+        ```
+        2017-10-05 14:51:29,933 ExampleHarvest: INFO     do_harvest  Repo: DivvyCloud/libcloud, Located at: https://github.com/DivvyCloud/libcloud
+        2017-10-05 14:51:29,933 ExampleHarvest: INFO     do_harvest  Repo: DivvyCloud/DivvyCloud-ElasticSearch-Exporter, Located at: https://github.com/DivvyCloud/DivvyCloud-ElasticSearch-Exporter
+        2017-10-05 14:51:29,933 ExampleHarvest: INFO     do_harvest  Repo: DivvyCloud/slackplugin, Located at: https://github.com/DivvyCloud/slackplugin
+        ```
+        """
+        for metric in self.repo_getter():
+            logger.info('Repo: %s, Located at: %s' % (metric.get('full_name'), metric.get('html_url')))
 
     def _cleanup(self):
         super(SkeletonHarvester, self)._cleanup()
